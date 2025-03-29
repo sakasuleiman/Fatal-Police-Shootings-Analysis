@@ -1,6 +1,6 @@
 # Fatal Police Shootings Analysis (2015-present)
 
-![Heatmap of Shootings by State](outputs/figures/heatmap.png)  
+![Heatmap of Shootings by State](figures/heatmap.png)  
 
 ## 📌 Overview
 This project examines patterns and factors associated with fatal police shootings in the United States using comprehensive data analysis and statistical modeling techniques. By exploring geographical distributions, demographic patterns, situational characteristics, and temporal trends, we identify key factors that influence these incidents and classify police departments based on their patterns of fatal shootings.
@@ -87,5 +87,5 @@ packages <- c(
 
 ## Contributors
 - [Suleiman Saka](https://github.com/sakasuleiman)
-- [Yousra Shleibik](https://github.com/YourGitHubUsername)
-- [Elijah Alabi](https://github.com/YourGitHubUsername)
+- [Yousra Shleibik](https://github.com/YousraShleibik)
+- [Elijah Alabi](https://github.com/elijahoalabi)
