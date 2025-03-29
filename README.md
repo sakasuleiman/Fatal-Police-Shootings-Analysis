@@ -61,14 +61,10 @@ Source: [Washington Post Police Shootings Database](https://github.com/washingto
 │   ├── csv                  # Original data (CSV/JSON)
 ├── 📂 scripts
 │   ├── 📄 coding.rmd
-├── 📂 outputs
-│   ├── 📂 figures               # Saved plots (PNG/SVG)
+├── 📂 figures 
 ├── 📂 docs
 │   ├── 📄 presentation.pdf
 │   └── 📄 report.pdf
-├── 📄 .gitignore
-├── 📄 requirements.txt
-├── 📄 LICENSE
 └── 📄 README.md
 ```
 
