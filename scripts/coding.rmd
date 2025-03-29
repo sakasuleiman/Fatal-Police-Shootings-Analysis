@@ -1,0 +1,1583 @@
+---
+title: "Fatal Police Shootings (2015-present)"
+author: "Yousra Shleibik, Elijah Alabi & Suleiman Saka"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+---
+```{r setup, include=FALSE}
+library(knitr)
+library(ggplot2)
+knitr::opts_chunk$set(echo = TRUE)
+library(HistData)
+library(dplyr)
+library(tidyr)
+library(naniar)
+library(tidyverse)
+##install.packages("naniar")
+
+#install.packages("maps", dependencies = TRUE)
+library(maps)
+library(viridis)
+library(gridExtra)
+library(RColorBrewer)
+
+#install.packages("usmap", dependencies = TRUE)
+library(usmap)
+library(ggrepel)
+
+library(corrplot)
+#install.packages("reshape2", dependencies = TRUE)
+library(reshape2)
+library(gridExtra)
+library(lubridate)
+
+library(cluster)   
+#install.packages("factoextra", dependencies = TRUE)
+library(factoextra) 
+
+library(survival)
+#install.packages("survminer")
+library(survminer)  # For survival visualization
+
+library(sf)
+library(KernSmooth)  # For Kernel Density Estimation
+
+#install.packages("spdep")
+library(spdep)
+
+#install.packages("sp")
+library(sp)
+
+```
+
+
+## **Introduction**
+
+##### This project examines patterns and factors associated with fatal police shootings in the United States using data analysis and statistical modeling techniques. By exploring geographical distributions, demographic patterns, situational characteristics, and temporal trends, this research aims to identify key factors that influence these tragic events.The analysis begins with thorough data cleaning and preprocessing, followed by an exploratory data analysis that visualizes patterns of our data distribution. Advanced statistical modeling techniques, including hierarchical clustering, Geospatial and survival analysis, are then applied to uncover deeper insights into departmental patterns and temporal dynamics.By combining descriptive statistics with this research contributes to our understanding of the complex factors surrounding police use of lethal force. This work represents an important step toward data-informed approaches to addressing one of the most challenging issues in contemporary law enforcement and public safety.
+
+
+
+## **Data source and Definitions**
+
+##### The dataset documents all fatal encounters involving law enforcement in the United States since 2015. It includes detailed records of thousands of incidents, with variables such as demographic information, incident details, and law enforcement factors.
+
+#### **Source:** https://github.com/washingtonpost/data-police-shootings/blob/master/v2/README.md or https://www.washingtonpost.com/graphics/investigations/police-shootings-database/
+
+#### **Key Variables**:
+
+##### - **ids**: Unique identifier for each incident
+##### - **date**: Date of the incident
+##### - **age**: Age of the individual involved
+##### - **gender**: age of the individual involved
+##### - **race**: race of the individual involved
+##### - **race_source**: Origin of the racial classification information
+
+##### - **state**: State where the incident occurred
+##### - **city**: City where the incident occurred
+##### - **county**: County where the incident occurred
+##### - **latitude**: Latitude coordinate of the incident location
+##### - **longitude**: Longitude coordinate of the incident location
+
+##### - **threat_type**: Type of threat perceived by officers
+##### - **armed_with**: Weapon or item the individual was armed with
+##### - **body_camera**: Indicator for body camera usage
+##### - **flee_status**: Indicator for fleeing behavior
+##### - **was_mental_illness_related**: Indicator for mental illness involvement
+
+
+
+## **Data Cleaning and Preprocessing**
+
+##### This section outlines the essential data cleaning procedures applied to the fatal shootings dataset. The process involved handling missing values through multiple approaches: replacing empty cells in character columns with "not_available" and numeric columns with a placeholder value (99999), then using random sampling from existing values for character columns and mean imputation for numeric columns.
+
+
+
+```{r}
+df <- read.csv("fatal_shootings.csv")
+
+```
+
+
+
+```{r}
+# Replace empty cells in character columns with "not_available"
+df_cleaned <- df %>%
+  mutate(across(
+    where(is.character), 
+    ~ ifelse(. == "" | is.na(.), "not_available", .) 
+  ))
+
+# Replace empty cells in numeric columns with 99999
+df_cleaned <- df_cleaned %>%
+  mutate(across(
+    where(is.numeric), 
+    ~ replace_na(., 99999) 
+  ))
+
+# Replace "not_available" with NA in all character columns
+df_cleaned <- df_cleaned %>%
+  mutate(across(
+    where(is.character), 
+    ~ na_if(., "not_available") 
+  ))
+
+```
+
+
+
+
+```{r}
+# Count missing values (NA and 99999) for each column
+missing_summary <- df_cleaned %>%
+  summarise(across(
+    everything(),
+    ~ sum(is.na(.) | . == 99999) 
+  ))
+missing_summary_transposed <- t(missing_summary)
+colnames(missing_summary_transposed) <- "Missing_Count"
+print(missing_summary_transposed)
+```
+
+
+```{r}
+set.seed(123)
+
+# Function to replace NA with random values from the same column (for character columns)
+replace_na_with_random <- function(column) {
+  non_na_values <- column[!is.na(column)]
+  if (length(non_na_values) == 0) {
+    return(column) 
+  }
+  column[is.na(column)] <- sample(non_na_values, sum(is.na(column)), replace = TRUE)
+  return(column)
+}
+
+# Dataframe for the final cleaned data
+df_final <- df_cleaned %>%
+  mutate(across(
+    where(is.character),
+    ~ replace_na_with_random(.) 
+  )) %>%
+  mutate(across(
+    where(is.numeric), 
+    ~ ifelse(. == 99999, mean(.[. != 99999], na.rm = TRUE), .) 
+  )) %>%
+  mutate(age = as.integer(age))
+```
+
+
+```{r}
+# Re-Check for missing values in all columns
+missing_summary <- df_final %>%
+  summarise(across(
+    everything(),
+    ~ sum(is.na(.) | . == 99999 | . == "") 
+  )) 
+
+# Confirmation message
+if (all(missing_summary == 0)) {
+  print("No missing values found in the dataframe.")
+} else {
+  print("Missing values found in the dataframe:")
+  print(missing_summary)
+}
+```
+
+
+## **Exploratory Data Analysis (EDA)**
+
+##### This section presents a visual representation of the fatal police shootings dataset. Through a series of visualizations, we examine geographic distribution, demographic patterns, situational characteristics, and temporal trends. This approach enables the identification of patterns and relationships within the data.
+
+
+##### 1. **Heatmap of shootings by state**: The state-level heatmap reveals significant geographic variation in the frequency of fatal police shootings. States with higher populations such as California, Texas, and Florida show elevated numbers of incidents, but population alone doesn't explain all variations. 
+
+```{r}
+state_counts <- df_final %>%
+  count(state) %>%
+  arrange(desc(n))
+
+# State-level map
+states_map <- map_data("state")
+state_crosswalk <- data.frame(
+  state = state.abb,
+  state_name = tolower(state.name)
+)
+
+# Convert state abbreviations to full names for mapping
+state_counts_for_map <- state_counts %>%
+  left_join(state_crosswalk, by = "state") %>%
+  select(state_name, n)
+
+# map data joined
+map_data <- states_map %>%
+  left_join(state_counts_for_map, by = c("region" = "state_name"))
+
+# Create the map
+
+ggplot(map_data, aes(long, lat, group = group, fill = n)) +
+  geom_polygon(color = "white", linewidth = 0.1) +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  scale_fill_viridis(option = "plasma", name = "Number of\nShootings", 
+                    guide = guide_colorbar(title.position = "top")) +
+  labs(title = "Fatal Police Shootings by State (2015-present)",
+       caption = "Source: Fatal Police Shootings Database") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank())
+
+```
+
+
+##### 2. **Race Distribution**: This bar chart analyzes the racial distribution of victims in fatal police shootings, showing the proportion of victims by racial category
+
+
+```{r}
+
+race_plot <- df_final %>%
+  count(race) %>%
+  arrange(desc(n)) %>%
+  mutate(proportion = n / sum(n),
+         race = factor(race, levels = race[order(n, decreasing = TRUE)])) %>%
+  ggplot(aes(x = race, y = proportion, fill = race)) +
+  geom_bar(stat = "identity", width = 0.6) +  
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Distribution by Race", 
+       x = "Race", 
+       y = "Proportion",
+       caption = "Note: W=White, B=Black, H=Hispanic, A=Asian, N=Native American, O=Other") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)  
+  ) +
+  scale_y_continuous(labels = scales::percent)
+
+print(race_plot)
+
+```
+
+
+
+##### 3. **Age distribution**: This histogram examines the age distribution of individuals involved in fatal police shootings, highlighting which age groups are most frequently represented among victims and identifying patterns across the age spectrum.
+
+```{r}
+
+age_plot <- ggplot(df_final, aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "white") +
+  labs(title = "Age Distribution of Victims", 
+       x = "Age", 
+       y = "Count") +
+  theme_minimal()
+print(age_plot)
+
+
+age_density <- ggplot(df_final, aes(x = age)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  labs(title = "Age Distribution Density", 
+       x = "Age", 
+       y = "Density") +
+  theme_minimal()
+
+```
+
+
+##### 4. **Gender distribution**: This pie chart illustrates the gender breakdown of victims in fatal police shootings, highlighting the gender disparities in lethal force incidents and providing context for understanding gender-related patterns in policing outcomes.
+
+
+```{r}
+accessible_colors <- c(
+  "male" = "#0072B2",       # Blue
+  "female" = "#D55E00",     # Orange
+  "non-binary" = "#009E73"  # Green
+)
+
+
+
+gender_plot <- df_final %>%
+  count(gender) %>%
+  mutate(proportion = n / sum(n),
+         label = ifelse(proportion < 0.01, "<1%", scales::percent(proportion, accuracy = 0.1))) %>%
+  ggplot(aes(x = "", y = proportion, fill = gender)) +
+  geom_bar(stat = "identity", width = 1, color = "white") + 
+  coord_polar("y", start = 0) +
+  scale_fill_manual(values = accessible_colors) + 
+  labs(title = "Gender Distribution", fill = "Gender") +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  ) +
+  geom_label_repel(aes(label = label), 
+                   position = position_stack(vjust = 0.5),
+                   size = 5, 
+                   color = "black",
+                   box.padding = 0.5,
+                   direction = "y",
+                   show.legend = FALSE)
+print(gender_plot)
+
+```
+
+
+##### 5. **Armed status distribution**: This horizontal bar chart represent the most common types of weapons or items individuals were armed with during fatal police encounters. The visualization provides crucial context about threat levels and situational factors that may influence police decisions to use lethal force.
+
+
+```{r}
+
+armed_plot <- df_final %>%
+  count(armed_with) %>%
+  arrange(desc(n)) %>%
+  head(10) %>%  # Top 10 categories
+  mutate(armed_with = factor(armed_with, levels = armed_with[order(n, decreasing = TRUE)])) %>%
+  ggplot(aes(x = armed_with, y = n, fill = armed_with)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Top 10 Armed Status Categories", 
+       x = "", 
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+print(armed_plot)
+
+```
+
+
+##### 6. **Mental illness related shootings**: This pie chart shows the proportion of fatal police shootings involving individuals with suspected mental illness. The visualization highlights the intersection of mental health issues and lethal police encounters.
+
+
+```{r}
+
+
+accessible_colors <- c("Yes" = "#E69F00",  
+                       "No" = "#56B4E9")   
+
+mental_illness_plot <- df_final %>%
+  mutate(was_mental_illness_related = as.logical(was_mental_illness_related)) %>%  
+  count(was_mental_illness_related) %>%
+  mutate(label = ifelse(was_mental_illness_related, "Yes", "No"),
+         proportion = n / sum(n),
+         display_label = scales::percent(proportion, accuracy = 0.1)) %>%  
+  ggplot(aes(x = "", y = proportion, fill = label)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +  
+  coord_polar("y", start = 0) +
+  scale_fill_manual(values = accessible_colors) + 
+  labs(title = "Mental Illness Related Shootings", fill = "Mental Illness") +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  ) +
+  geom_text(aes(label = display_label), 
+            position = position_stack(vjust = 0.5), 
+            size = 5, 
+            color = "black", 
+            fontface = "bold")  
+
+print(mental_illness_plot)
+
+
+```
+
+
+##### 7. **Body camera usage**: This pie chart illustrates the prevalence of body camera usage during fatal police shootings. The visualization provides insight into police transparency and accountability measures in incidents involving lethal force.
+
+
+```{r}
+
+accessible_colors <- c("Yes" = "#009E73",  
+                       "No" = "#E69F00")   
+
+body_camera_plot <- df_final %>%
+  mutate(body_camera = as.logical(body_camera)) %>%  
+  count(body_camera) %>%
+  mutate(label = ifelse(body_camera, "Yes", "No"),
+         proportion = n / sum(n),
+         display_label = scales::percent(proportion, accuracy = 0.1)) %>%  
+  ggplot(aes(x = "", y = proportion, fill = label)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +  
+  coord_polar("y", start = 0) +
+  scale_fill_manual(values = accessible_colors) +  
+  labs(title = "Body Camera Usage", fill = "Body Camera") +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  ) +
+  geom_text(aes(label = display_label), 
+            position = position_stack(vjust = 0.5), 
+            size = 5, 
+            color = "black", 
+            fontface = "bold")  
+
+print(body_camera_plot)
+
+```
+
+
+##### 8. **Threat Type Distribution**: This horizontal bar chart examines the types of threats that officers reported facing during fatal police shooting incidents. The visualization categorizes the perceived threats that preceded the use of lethal force.
+
+
+```{r}
+threat_plot <- df_final %>%
+  count(threat_type) %>%
+  arrange(desc(n)) %>%
+  head(10) %>%
+  mutate(threat_type = factor(threat_type, levels = threat_type[order(n, decreasing = TRUE)])) %>%
+  ggplot(aes(x = threat_type, y = n, fill = threat_type)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Top Threat Types", 
+       x = "", 
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+print(threat_plot)
+```
+
+
+##### 9. **Flee status distribution**: The chart shows the distribution of "flee status" among victims of fatal police shootings, indicating whether individuals were attempting to flee from police and by what means when lethal force was used.
+
+
+```{r}
+flee_plot <- df_final %>%
+  count(flee_status) %>%
+  mutate(proportion = n / sum(n),
+         flee_status = factor(flee_status, levels = flee_status[order(n, decreasing = TRUE)])) %>%
+  ggplot(aes(x = flee_status, y = proportion, fill = flee_status)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Set3") +
+  labs(title = "Flee Status Distribution", 
+       x = "Flee Status", 
+       y = "Proportion") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_y_continuous(labels = scales::percent)
+print(flee_plot)
+```
+
+##### 10. **Race and Mental Illness Interaction**: This grouped bar chart examines the intersection of race and mental illness status in fatal police shootings. By showing how mental illness relates to different racial groups.
+
+
+```{r}
+race_mental_plot <- df_final %>%
+  group_by(race, was_mental_illness_related) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(mental_illness = ifelse(was_mental_illness_related, "Yes", "No")) %>%
+  group_by(race) %>%
+  filter(sum(count) > 0) %>%  
+  ungroup() %>%
+  ggplot(aes(x = race, y = count, fill = mental_illness)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Yes" = "#D55E00", "No" = "#0072B2")) + 
+  labs(title = "Mental Illness Status by Race", 
+       x = "Race", 
+       y = "Count",
+       fill = "Mental Illness") +
+  theme_minimal()
+
+print(race_mental_plot)
+```
+
+
+##### 11. **Age distribution by race**: This boxplot visualization compares age distributions across different racial groups in fatal police shootings. By examining how age patterns vary by race, the chart helps identify potential demographic disparities in police use of lethal force.
+
+
+```{r}
+age_race_plot <- ggplot(df_final, aes(x = race, y = age, fill = race)) +
+  geom_boxplot(width = 0.6) +  
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Age Distribution by Race", 
+       x = "Race", 
+       y = "Age") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1) 
+  )
+
+print(age_race_plot)
+
+```
+
+
+### Summary statistics (e.g., mean age, racial proportions) and correlations 
+
+
+```{r}
+# Summary statistics for numerical variables (e.g., age)
+summary_stats <- df_final %>%
+  summarise(
+    Mean_Age = mean(age, na.rm = TRUE),
+    Median_Age = median(age, na.rm = TRUE),
+    SD_Age = sd(age, na.rm = TRUE),
+    Min_Age = min(age, na.rm = TRUE),
+    Max_Age = max(age, na.rm = TRUE)
+  )
+print(summary_stats)
+
+# race label mapping
+race_mapping <- c(
+  "W" = "White",
+  "B" = "Black",
+  "H" = "Hispanic",
+  "A" = "Asian",
+  "N" = "Native American",
+  "O" = "Other",
+  "W;B" = "White; Black",
+  "W;H" = "White; Hispanic",
+  "B;H" = "Black; Hispanic",
+  "N;H" = "Native American; Hispanic"
+)
+
+# Calculate racial proportions
+race_proportions <- df_final %>%
+  mutate(
+    race = str_replace_all(race, pattern = race_mapping)
+  ) %>%
+  count(race) %>%
+  mutate(Percentage = n / sum(n) * 100) %>%
+  arrange(desc(Percentage))
+
+print(race_proportions)
+
+# Gender proportions
+gender_proportions <- df_final %>%
+  count(gender) %>%
+  mutate(Percentage = n / sum(n) * 100)
+print(gender_proportions)
+
+```
+
+
+
+
+```{r}
+# Calculate proportions
+
+bodycam_weapon_prop <- df_final %>%
+  group_by(armed_with, body_camera) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(percentage = n / sum(n) * 100)
+
+bodycam_weapon_prop <- bodycam_weapon_prop %>%
+  group_by(armed_with) %>%
+  filter(sum(n) > 5) %>%  
+  ungroup()
+
+colors <- c("True" = "#009E73", "False" = "#E69F00")  
+
+ggplot(bodycam_weapon_prop, aes(x = armed_with, y = percentage, fill = as.factor(body_camera))) +
+  geom_bar(stat = "identity", position = "dodge", color = "black", width = 0.7) + 
+  labs(
+    title = "Body Camera Usage by Weapon Presence",
+    x = "Weapon Type",
+    y = "Percentage (%)",
+    fill = "Body Camera Used?"
+  ) +
+  scale_fill_manual(values = colors) +  
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 40, hjust = 1, size = 10),  
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+
+
+
+```
+
+
+
+### Temporal Trends & Outliers
+
+##### This section explores how fatal police shootings have changed over time, examining  patterns, seasonal variations, and demographic trends. These temporal analyses help identify underlying patterns, outliers, and potential shifts in policing practices or reporting over the study period.
+
+
+
+##### **Fatal Police Shootings Over Time**: Some seasonal patterns are visible, with slight increases during summer months in certain years.
+
+
+```{r}
+
+df_final <- df_final %>%
+  mutate(date = as.Date(date)) %>%
+  mutate(month_year = floor_date(date, "month"))  
+
+# Plot shootings over time
+ggplot(df_final, aes(x = month_year)) +
+  geom_line(stat = "count", color = "darkred", linewidth = 1) +
+  labs(
+    title = "Fatal Police Shootings Over Time (2015-Present)",
+    x = "Date",
+    y = "Number of Shootings"
+  ) +
+  theme_minimal() +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")  
+
+```
+
+##### **Fatal Shootings by Race Over Time**: The visualization of fatal shootings by race over time shows relatively stable proportional representation of different racial groups, with some fluctuations year to year
+
+```{r}
+
+significant_races <- df_final %>%
+  group_by(race) %>%
+  summarise(total_incidents = n()) %>%
+  filter(total_incidents >= 10) %>%
+  pull(race)
+
+
+race_trend <- df_final %>%
+  mutate(year = year(date)) %>%
+  filter(race %in% significant_races) %>%
+  count(year, race) %>%
+  group_by(year) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+
+ggplot(race_trend, aes(x = year, y = percentage, color = race)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Fatal Shootings by Race Over Time",
+    x = "Year",
+    y = "Percentage (%)",
+    color = "Race"
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.title = element_text(size = 12)
+  )
+
+```
+
+
+##### **Fatal Shootings by Race Over Time (Normalized by Population)**: When normalized by population, the disparities become more apparent, with Black and Native American individuals consistently experiencing higher per capita rates of fatal police shootings compared to other racial groups. 
+
+```{r}
+
+df_final <- df_final %>%
+  mutate(race = case_when(
+    race == "W" ~ "White",
+    race == "B" ~ "Black",
+    race == "H" ~ "Hispanic",
+    race == "A" ~ "Asian",
+    race == "N" ~ "Native American",
+    TRUE        ~ "Other"  
+  ))
+
+
+significant_races <- df_final %>%
+  group_by(race) %>%
+  summarize(total_incidents = n()) %>%
+  filter(total_incidents >= 10) %>%
+  pull(race)
+
+# Aggregate by race and year 
+race_trend <- df_final %>%
+  mutate(year = year(date)) %>%
+  filter(race %in% significant_races) %>%
+  count(year, race)
+
+# Create a population data frame 
+race_pop <- data.frame(
+  race = c("White", "Black", "Hispanic", "Asian", "Native American"),
+  population = c(204277273, 46936733, 62080044, 19237361, 3742904)
+)
+
+# Join the aggregated data with the population estimates
+race_trend <- left_join(race_trend, race_pop, by = "race")
+
+# Normalize the count by population to obtain a rate per 100,000 population
+race_trend <- race_trend %>%
+  mutate(rate = (n / population) * 100000)
+
+# Create the plot with the normalized rate
+
+
+ggplot(race_trend, aes(x = year, y = rate, color = race)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Fatal Shootings by Race Over Time (Normalized by Population)",
+    x = "Year",
+    y = "Rate (per 100,000 population)",
+    color = "Race"
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.title = element_text(size = 12)
+  )
+
+```
+
+
+##### **Seasonal Trends in Shootings**: The chart shows a modest but noticeable monthly variations.
+
+
+```{r}
+# Aggregate by month
+seasonal_trend <- df_final %>%
+  mutate(month = month(date, label = TRUE)) %>%
+  count(month)
+
+# Plot
+ggplot(seasonal_trend, aes(x = month, y = n)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Seasonal Trends in Shootings",
+    x = "Month",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+```
+
+
+##### **Trends in Shootings in top 5 states**: The visualization of shootings in top 5 states over time reveals both commonalities and differences in state-level trends. While some states show relatively stable patterns, others display more increases or decreases during specific periods. 
+
+
+```{r}
+# Aggregate shootings by state and year
+state_trend <- df_final %>%
+  mutate(year = year(date)) %>%
+  count(year, state) %>%
+  group_by(year) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+# Plot top 5 states
+top_states <- state_trend %>%
+  group_by(state) %>%
+  summarise(total = sum(n)) %>%
+  slice_max(total, n = 5) %>%
+  pull(state)
+
+state_trend %>%
+  filter(state %in% top_states) %>%
+  ggplot(aes(x = year, y = n, color = state)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Shootings in Top 5 States Over Time",
+    x = "Year",
+    y = "Count",
+    color = "State"
+  ) +
+  theme_minimal()
+```
+
+
+##### **Trends in Age Group**: The age group trends visualization shows patterns in the age distribution of shooting victims over time, with the 18-30 and 31-45 age groups consistently representing the largest proportions.
+
+
+```{r}
+# Create age groups
+age_trend <- df_final %>%
+  mutate(
+    year = year(date),
+    age_group = cut(age, breaks = c(0, 18, 30, 45, 60, 100),
+                    labels = c("<18", "18-30", "31-45", "46-60", "61+"))
+  ) %>%
+  count(year, age_group)
+
+# Plot
+ggplot(age_trend, aes(x = year, y = n, fill = age_group)) +
+  geom_area() +
+  labs(
+    title = "Age Group Trends Over Time",
+    x = "Year",
+    y = "Count",
+    fill = "Age Group"
+  ) +
+  theme_minimal()
+```
+
+
+##### **Age Distribution**: The age distribution boxplot provides a summary of the victim age profile, showing a median around 36 years with most victims falling between mid-20s and late 40s. 
+
+
+```{r}
+# Boxplot for age distribution
+ggplot(df_final, aes(y = age)) +
+  geom_boxplot(fill = "steelblue", color = "black") +
+  labs(
+    title = "Age Distribution (Boxplot)",
+    y = "Age"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+##### **Geographic Distribution of Shootings**: The scatterplot of shootings by latitude and longitude creates a geographic representation that roughly outlines the contours of the United States, with higher densities of points corresponding to major population centers and urban areas. These outliers demonstrate that police shootings occur even in non-contiguous states with different geographic and potentially cultural contexts. Some points in the top left corner fall outside the typical coordinates for U.S. territories, suggesting potential data quality issues. These anomalous points likely represent geocoding errors, incorrect coordinate entries, or missing data that was improperly processed during data entries. 
+
+
+```{r}
+# Scatterplot of shootings by latitude/longitude
+ggplot(df_final, aes(x = longitude, y = latitude)) +
+  geom_point(alpha = 0.5, color = "darkred") +
+  labs(
+    title = "Geographic Distribution of Shootings",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal()
+
+```
+
+
+
+## **Model Implementation**
+
+#### **Research Question 1:** How can police departments be categorized based on patterns in their fatal shooting incidents, including factors such as body camera usage, demographic characteristics of victims, and overall shooting rates?
+
+
+#### **I. Hierarchical Clustering**: This was applied to identify patterns among police departments based on their shooting characteristics. The analysis aggregated data at the agency level, focusing on factors such as shooting frequency, body camera usage, racial composition of victims, and armed status. The goal was to uncover natural groupings of departments with similar operational patterns, which could reflect differences in policing strategies, regional practices, or community contexts.
+
+
+```{r}
+set.seed(42)
+
+# Aggregate data by police department (agency_ids)
+agency_data <- df_final %>%
+  group_by(agency_ids) %>%
+  summarise(
+    shooting_count = n(),
+    body_cam_usage = mean(body_camera == TRUE, na.rm = TRUE),
+    white_pct = mean(race == "White", na.rm = TRUE),
+    black_pct = mean(race == "Black", na.rm = TRUE),
+    armed_pct = mean(armed_with != "unarmed", na.rm = TRUE)
+  ) %>%
+  drop_na() %>%  
+  filter(shooting_count >= 10) %>%  
+  column_to_rownames("agency_ids")
+agency_scaled <- scale(agency_data)
+```
+
+
+
+```{r}
+# Identify zero-variance columns
+zero_var_cols <- which(apply(agency_data, 2, var) == 0)
+print(zero_var_cols)  # Example output: integer(0) if no issues
+
+# If zero_var_cols is not empty, remove them
+if (length(zero_var_cols) > 0) {
+  agency_data <- agency_data[, -zero_var_cols]
+}
+```
+
+
+```{r}
+# Normalize the data (z-scores)
+agency_scaled <- scale(agency_data)
+
+# Verify no NA/NaN/Inf
+sum(is.na(agency_scaled))  # Must return 0
+sum(is.infinite(agency_scaled))  # Must return 0
+```
+
+
+
+
+```{r}
+# Compute Distance Matrix Using Euclidean distance
+dist_matrix <- dist(agency_scaled, method = "euclidean")
+```
+
+
+
+##### **Dendrogram**: The dendrogram shows three distinct clusters of police departments with different shooting patterns. The hierarchical structure reveals how departments group based on similarity, with longer vertical lines indicating greater differences between clusters. This suggests police departments do not operate uniformly across the country. The clear separation between clusters indicates fundamental differences in how departments engage in situations that lead to fatal shootings. These groupings likely reflect different policing philosophies, regional practices, department sizes, or community contexts.
+
+
+```{r}
+
+# Apply hierarchical clustering with Ward's method
+hc <- hclust(dist_matrix, method = "ward.D2")
+
+# Visualize the dendrogram
+fviz_dend(hc, k = 3, cex = 0.5, main = "Dendrogram of Police Departments")
+
+```
+
+
+##### **Optimal Clusters**: The gap statistic analysis confirms that three clusters represent the optimal grouping structure. The peak at k=2 indicates that increasing the number of clusters beyond this point would add unnecessary complexity without capturing significantly more information about departmental differences.
+
+
+```{r}
+
+# Compute gap statistic
+gap_stat <- clusGap(agency_scaled, FUN = hcut, K.max = 10, B = 50)
+fviz_gap_stat(gap_stat) + 
+  labs(title = "Optimal Number of Clusters (Gap Statistic)")
+
+```
+
+
+
+```{r}
+
+# Cut into 3 clusters (based on gap statistic)
+cluster_groups <- cutree(hc, k = 3)
+
+# Assign clusters back to data
+agency_data$cluster <- as.factor(cluster_groups)
+
+```
+
+
+##### **PCA Clusters**: The PCA cluster visualization provides a two-dimensional representation of the differences between police department clusters. The separation between the three groups in this space confirms that the clusters represent different department types. 
+
+##### Cluster Characteristics:
+
+##### - Cluster 1: Departments with moderate shooting counts (avg. 19.8), highest percentage of armed subjects (95.7%), and predominantly white victims (52.9%)
+
+##### - Cluster 2: Departments with high shooting counts (avg. 73.1), high percentage of armed subjects (94.5%), and more racially diverse victims (24.1% white, 45.7% black)
+
+##### - Cluster 3: Departments with lowest shooting counts (avg. 17.1), lowest percentage of armed subjects (92.0%), and predominantly black victims (56.5%).
+
+
+
+```{r}
+
+set.seed(123)
+
+# Summary statistics by cluster
+cluster_summary <- agency_data %>%
+  group_by(cluster) %>%
+  summarise(
+    avg_shootings = mean(shooting_count),
+    avg_armed = mean(armed_pct),
+    avg_white = mean(white_pct),
+    avg_black = mean(black_pct)
+  )
+print(cluster_summary)
+
+# Create a mapping from original cluster to ordered cluster
+cluster_order <- order(cluster_summary$avg_shootings)
+cluster_map <- setNames(seq_along(cluster_order), cluster_order)
+# Remap clusters
+agency_data$cluster_ordered <- as.factor(cluster_map[agency_data$cluster])
+# Use ordered clusters for visualization
+fviz_cluster(
+  list(data = agency_scaled, cluster = as.numeric(agency_data$cluster_ordered)),
+  ellipse.type = "norm",
+  geom = "point",
+  palette = "jco",
+  ggtheme = theme_minimal(),
+  main = "Cluster Visualization (PCA) - Stable Ordering"
+)
+
+```
+
+
+##### **Discussion**
+
+##### This clustering reveals important patterns in police shootings across departments:
+
+##### - **Department Size Impact:** The striking difference in shooting counts between Cluster 2 and the others suggests department size or jurisdiction population may be a key differentiating factor.
+
+##### - **Racial Disparities:** The substantial variation in racial composition of victims across clusters (ranging from 24.1% to 52.9% white victims) suggests systematic differences in police-civilian interactions across different agencies.
+
+##### - **Armed Status Consistency:** The relatively high percentage of armed subjects across all clusters (92 - 96%) indicates this is a common factor in most police shootings, regardless of department.
+
+##### These findings have implications for policy-making, suggesting that interventions may need to be tailored to specific department types rather than applying a one-size-fits-all approach to reducing fatal police shootings.
+
+
+#### **Research Question 2:** What factors influence the timing and frequency of fatal police shootings across different regions and demographics?
+
+#### **II. Survival Analysis**: This was conducted to examine the time between fatal police shootings. The Kaplan-Meier estimator assessed overall survival probabilities, while stratified analyses explored differences by state and race. A Cox proportional hazards model evaluated the impact of variables like race, state, body camera usage, and armed status on the likelihood of shootings occurring closer together in time.
+
+
+```{r}
+
+# Convert date to proper format and sort
+df_surv <- df_final %>%
+  mutate(
+    date = as.Date(date),  # Ensure date is Date type
+    time = as.numeric(date - min(date))  # Days since first incident
+  ) %>% 
+  arrange(date)  # Sort chronologically
+
+# Create survival object (time between shootings)
+df_surv <- df_surv %>%
+  mutate(
+    time_diff = c(0, diff(time)),  # Days between consecutive shootings
+    event = 1  # All rows represent observed events
+  )
+
+```
+
+
+
+##### **Kaplan-Meier**: The Kaplan-Meier survival curve shows a steep initial decline, indicating that many subsequent shootings occur within a short time after a previous shooting. The curve flattens as time increases, suggesting that the probability of going longer periods without a shooting decreases rapidly.
+
+
+```{r}
+# Fit Kaplan-Meier model
+km_fit <- survfit(Surv(time_diff, event) ~ 1, data = df_surv)
+
+# Plot survival curve
+ggsurvplot(
+  km_fit,
+  data = df_surv,
+  title = "Survival Curve: Time Between Shootings",
+  xlab = "Days Between Incidents",
+  ylab = "Survival Probability",
+  risk.table = TRUE,
+  conf.int = TRUE, 
+  ggtheme = theme_minimal()
+)
+
+
+```
+
+
+##### **Survival by State**: The stratified survival curves by state reveal significant differences (p=0.001) in time patterns between shootings across different states. States with curves that decline more rapidly experience shorter times between shooting incidents, indicating higher frequency.
+
+
+```{r}
+
+# Fit stratified model
+km_fit_region <- survfit(Surv(time_diff, event) ~ state, data = df_surv)
+
+# Plot stratified survival curves
+ggsurvplot(
+  km_fit_region,
+  data = df_surv,
+  title = "Survival by State",
+  xlab = "Days Between Incidents",
+  ylab = "Survival Probability",
+  pval = TRUE,          
+  conf.int = TRUE,      
+  legend.title = "State",
+  ggtheme = theme_minimal()
+)
+
+```
+
+
+##### **Survival by Race**: The survival curves stratified by race also show differences in the timing patterns of shootings involving victims of different racial backgrounds. Though Black and Hispanic victims had slightly lower survival probabilities.
+
+
+```{r}
+# Fit model
+km_fit_race <- survfit(Surv(time_diff, event) ~ race, data = df_surv)
+
+# Plot
+ggsurvplot(
+  km_fit_race,
+  data = df_surv,
+  title = "Survival by Race",
+  xlab = "Days Between Incidents",
+  ylab = "Survival Probability",
+  pval = TRUE,
+  ggtheme = theme_minimal()
+)
+```
+
+
+
+```{r}
+
+survdiff(Surv(time_diff, event) ~ state, data = df_surv)
+
+```
+
+
+
+##### **Cox Proportional Hazards Model**: This model reveals several statistically significant factors associated with the timing of shooting incidents:
+
+##### - **Body Cameras:** The presence of body cameras is associated with a small but significant reduction in hazard (exp(coef) = 0.949, p = 0.049), suggesting slightly longer times between incidents when officers wear cameras.
+
+##### - **Weapon Status:** Incidents involving subjects with guns show a significantly higher hazard (exp(coef) = 1.135, p = 0.048), indicating shorter times between such incidents.
+
+##### - **Geographic Differences:** Several states (DC, MA, MD, NH) show significantly lower hazards compared to the reference state, indicating longer times between shootings in these locations.
+
+
+
+```{r}
+# Fit Cox model
+cox_model <- coxph(
+  Surv(time_diff, event) ~ race + state + body_camera + armed_with,
+  data = df_surv
+)
+
+# Summarize results
+summary(cox_model)
+
+```
+
+
+
+##### **Discussion**
+
+##### The survival analysis provides valuable insights into the temporal patterns of police shootings:
+
+##### - **Intervention Effects:** The association between body cameras and longer intervals between shootings suggests possible deterrent effects of this technology, though the effect size is modest.
+
+
+##### - **Risk Factors:** The higher hazard for incidents involving armed subjects with guns highlights how weapon type may influence the clustering of shooting incidents.
+
+##### - **Regional Variation:** The significant differences between states point to the importance of local policies, training, and policing cultures in determining shooting patterns.
+
+##### - **Policy Implications:** These findings suggest that interventions like body cameras may help extend the time between fatal police shootings, potentially providing more opportunities for prevention.
+
+##### This analysis also demonstrates that the frequency of police shootings is not random but follows patterns influenced by geographic, situational, and technological factors. This understanding could help inform targeted interventions to reduce the frequency of these incidents.
+
+
+
+#### **Research Question 3:** Are there statistically significant spatial clusters of fatal police shootings in the U.S., and do they correlate with incident-level factors (e.g., weapon presence, body camera usage)?
+
+#### **III. Geospatial Hotspot Analysis using Getis-Ord Gi**: This analysis explored whether there are statistically significant spatial clusters of fatal police shootings and whether these clusters correlate with incident-level factors such as weapon presence and body camera usage. This analysis identifies significant spatial hotspots and coldspots of police shootings across the country, looking beyond simple frequency maps to identify areas with statistically meaningful clusters.
+
+
+```{r}
+# Step 1: Clean the data
+df_geo <- df_final %>%
+  filter(!is.na(latitude)) %>%  # Remove rows with missing coordinates
+  #filter(between(latitude, 20, 50) & between(longitude, -130, -60)) %>%  # Filter to continental U.S.
+  distinct(latitude, longitude, .keep_all = TRUE)  # Remove duplicate coordinates
+
+# Step 2: Convert to SpatialPointsDataFrame
+coordinates(df_geo) <- ~longitude + latitude
+proj4string(df_geo) <- CRS("+proj=longlat +datum=WGS84")
+
+# Step 3: Create spatial weights matrix (k-nearest neighbors, k=15 to reduce sub-graphs)
+knn <- knearneigh(coordinates(df_geo), k = 15)  # Increase k to reduce sub-graphs
+knn_nb <- knn2nb(knn)
+
+# Step 4: Check for isolated points and sub-graphs
+isolated_points <- which(card(knn_nb) == 0)
+print(paste("Number of isolated points:", length(isolated_points)))
+
+if (length(isolated_points) > 0) {
+  df_geo <- df_geo[-isolated_points, ]  # Remove isolated points
+}
+
+sub_graphs <- n.comp.nb(knn_nb)
+print(paste("Number of sub-graphs:", sub_graphs$nc))
+
+# Step 5: Create spatial weights matrix
+spatial_weights <- nb2listw(knn_nb, style = "B", zero.policy = TRUE)
+
+# Step 6: Run Global Moran’s I test
+# Use 'armed_with' as the variable of interest (binary: armed vs. unarmed)
+moran_test <- moran.test(
+  x = as.numeric(df_geo$armed_with != "unarmed"),  # 1 = armed, 0 = unarmed
+  listw = spatial_weights,
+  zero.policy = TRUE
+)
+print(paste("Global Moran's I p-value:", moran_test$p.value))
+
+# Step 7: Run Local Gi* analysis
+gi_results <- localG(
+  x = as.numeric(df_geo$armed_with != "unarmed"),  # 1 = armed, 0 = unarmed
+  listw = spatial_weights,
+  zero.policy = TRUE
+)
+
+# Step 8: Classify hotspots and coldspots
+df_geo$gi_zscore <- as.numeric(gi_results)
+df_geo$hotspot <- ifelse(df_geo$gi_zscore >= 1.96, "Hotspot",
+                        ifelse(df_geo$gi_zscore <= -1.96, "Coldspot", "Non-significant"))
+
+# Step 9: Convert to sf object for visualization
+df_sf <- st_as_sf(df_geo)
+
+# Step 10: Visualize hotspots
+hotspot_map <- ggplot(df_sf) +
+  geom_sf(aes(color = hotspot), size = 1, alpha = 0.6) +
+  scale_color_manual(values = c("Hotspot" = "red", "Coldspot" = "blue", "Non-significant" = "grey")) +
+  labs(title = "Fatal Police Shooting Hotspots (Armed vs. Unarmed)",
+       subtitle = paste("Global Moran's I p-value:", round(moran_test$p.value, 4))) +
+  theme_minimal()
+
+# Step 11: Create a heatmap of shootings by state
+state_counts <- df_final %>%
+  count(state) %>%
+  arrange(desc(n))
+
+# Get U.S. state map data
+us_states <- map_data("state")
+state_crosswalk <- data.frame(
+  state = state.abb,
+  state_name = tolower(state.name)
+)
+
+# Merge shooting counts with state map data
+state_counts_for_map <- state_counts %>%
+  left_join(state_crosswalk, by = "state") %>%
+  dplyr::select(state_name, n)  # Explicitly use dplyr::select
+
+map_data <- us_states %>%
+  left_join(state_counts_for_map, by = c("region" = "state_name"))
+
+# Create heatmap
+heatmap <- ggplot(map_data, aes(long, lat, group = group, fill = n)) +
+  geom_polygon(color = "white", linewidth = 0.1) +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  scale_fill_viridis(option = "plasma", name = "Number of\nShootings", 
+                    guide = guide_colorbar(title.position = "top")) +
+  labs(title = "Fatal Police Shootings by State (2015-present)",
+       caption = "Source: Fatal Police Shootings Database") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank())
+
+# Step 12: Display both maps side by side
+library(gridExtra)
+grid.arrange(hotspot_map, heatmap, ncol = 2)
+
+# Step 13: Correlate hotspots with incident factors
+# Ensure columns are numeric or logical
+df_sf <- df_sf %>%
+  mutate(
+    body_camera = as.logical(body_camera),  # Convert to logical (TRUE/FALSE)
+    was_mental_illness_related = as.logical(was_mental_illness_related)  # Convert to logical
+  )
+
+hotspot_stats <- df_sf %>%
+  st_drop_geometry() %>%
+  group_by(hotspot) %>%
+  summarise(
+    weapon_pct = mean(armed_with != "unarmed", na.rm = TRUE) * 100,
+    bodycam_pct = mean(body_camera, na.rm = TRUE) * 100,
+    mental_illness_pct = mean(was_mental_illness_related, na.rm = TRUE) * 100
+  )
+
+print(hotspot_stats)
+
+```
+
+
+##### **Discussion**
+
+##### The table compares incident-level factors (weapon presence, body camera usage, mental illness) across coldspots and non-significant areas:
+
+##### **Weapon Presence**: For Coldspots, 91.42% of individuals were armed. Weapon presence is high across all areas (over 90%).For Non-significant Areas, 94.64% of individuals were armed. There is no significant difference in weapon presence between coldspots and non-significant areas. Therefore, Weapon presence is uniformly high and does not explain the differences between coldspots and non-significant areas.
+
+##### **Body Camera Usage**: For Coldspots, 23.43% of incidents involved body cameras. For Non-significant Areas, 17.13% of incidents involved body cameras. Body camera usage is higher in coldspots compared to non-significant areas. Therefore, Accountability measures like body cameras may reduce the frequency of fatal shootings.
+
+##### **Mental Illness**: For Coldspots, 23.64% of incidents involved individuals with suspected mental illness. For Non-significant Areas, 20.16% of incidents involved individuals with suspected mental illness. Mental illness involvement is slightly higher in coldspots compared to non-significant areas. Therefore, Mental illness is a factor in fatal police shootings, but the difference between coldspots and non-significant areas is not substantial.
+
+
+##### **For Policy Implications**, we suggest:
+##### - Increase body camera usage in areas with high shooting rates to improve transparency and accountability.
+##### - Provide better mental health resources and training for law enforcement to address mental health-related incidents.
+##### - While weapon presence is uniformly high, further investigation is needed to understand the types of weapons involved and their impact on fatal shootings.
+
+
+
+##### **The Kernel Density Estimation (KDE)** was use to validate the spatial clustering of fatal police shootings. 
+
+```{r}
+# Step 1: Clean the data
+df_geo <- df_final %>%
+  filter(!is.na(latitude)) %>%  
+  distinct(latitude, longitude, .keep_all = TRUE)  
+
+# Step 2: Convert to sf object
+df_sf <- st_as_sf(df_geo, coords = c("longitude", "latitude"), crs = 4326)
+
+# Step 3: Convert to a planar coordinate system (e.g., UTM) for accurate distance calculations
+df_sf <- st_transform(df_sf, crs = 32617)  
+
+# Step 4: Extract coordinates for KDE
+coords <- st_coordinates(df_sf)
+
+# Step 5: Perform Kernel Density Estimation using KernSmooth
+# Define bandwidth (adjust as needed)
+bandwidth <- c(50000, 50000)  # 50 km in x and y directions
+
+# Create a grid for KDE
+grid_size <- 100  # Number of grid points in each direction
+x_range <- range(coords[, 1])
+y_range <- range(coords[, 2])
+x_grid <- seq(x_range[1], x_range[2], length.out = grid_size)
+y_grid <- seq(y_range[1], y_range[2], length.out = grid_size)
+
+# Perform KDE
+kde_result <- bkde2D(
+  coords,
+  bandwidth = bandwidth,
+  gridsize = c(grid_size, grid_size),
+  range.x = list(x_range, y_range)
+)
+
+# Step 6: Convert KDE result to a data frame for plotting
+kde_df <- expand.grid(x = kde_result$x1, y = kde_result$x2)
+kde_df$density <- as.vector(kde_result$fhat)
+
+# Step 7: Plot the KDE results
+kde_plot <- ggplot(kde_df, aes(x = x, y = y, fill = density)) +
+  geom_tile() +
+  scale_fill_viridis(option = "plasma", name = "Density of\nShootings") +
+  labs(title = "Kernel Density Estimation of Fatal Police Shootings",
+       subtitle = "Bandwidth = 50 km",
+       x = "Longitude",
+       y = "Latitude",
+       caption = "Source: Fatal Police Shootings Database") +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+# Step 8: Display the KDE plot
+print(kde_plot)
+
+```
+
+##### **The KDE and Getis-Ord Gi** analyses complement each other, with KDE providing a visual density surface and Getis-Ord Gi* confirming the statistical significance of clusters. Both methods consistently identify urban areas as hotspots and rural areas as coldspots, highlighting the influence of urbanization, population density, and regional policing practices on fatal police shootings.
+
+
+##### Normalize Shooting Rates by Population: This will provide a more accurate comparison of shooting rates across states.
+
+
+```{r}
+#Normalized heatmap for 2015, 2020, 2024 
+
+# Step 1: Create a population data table (including DC) in alphabetical order
+
+# Create a data frame with state.abb and state.name
+state_data <- data.frame(
+  state = state.abb,
+  state_name = state.name,
+  stringsAsFactors = FALSE
+)
+
+# Add DC to the data frame
+dc_row <- data.frame(state = "DC", state_name = "District of Columbia", stringsAsFactors = FALSE)
+state_data <- rbind(state_data, dc_row)
+
+# Sort the data frame by state abbreviation to ensure proper alignment
+state_data <- state_data[order(state_data$state), ]
+#print(state_data)
+
+# Add population data for 2015, 2020, and 2024
+state_population_table <- state_data %>%
+  mutate(
+    population_2015 = c(
+  738432,    # Alaska (AK)
+  4858979,   # Alabama (AL)
+  2978204,   # Arkansas (AR)
+  6828065,   # Arizona (AZ)
+  39144818,  # California (CA)
+  5456574,   # Colorado (CO)
+  3590886,   # Connecticut (CT)
+  672228,    # District of Columbia (DC)
+  945934,    # Delaware (DE)
+  20271272,  # Florida (FL)
+  10214860,  # Georgia (GA)
+  1431603,   # Hawaii (HI)
+  3123899,   # Iowa (IA)
+  1654930,   # Idaho (ID)
+  12859995,  # Illinois (IL)
+  6619680,   # Indiana (IN)
+  2911641,   # Kansas (KS)
+  4425092,   # Kentucky (KY)
+  4670724,   # Louisiana (LA)
+  6794422,   # Massachusetts (MA)
+  6006401,   # Maryland (MD)
+  1329328,   # Maine (ME)
+  9922576,   # Michigan (MI)
+  5489594,   # Minnesota (MN)
+  6083672,   # Missouri (MO)
+  2992333,   # Mississippi (MS)
+  1032949,   # Montana (MT)
+  10042802,  # North Carolina (NC)
+  756927,    # North Dakota (ND)
+  1896190,   # Nebraska (NE)
+  1330608,   # New Hampshire (NH)
+  8958013,   # New Jersey (NJ)
+  2085109,   # New Mexico (NM)
+  2890845,   # Nevada (NV)
+  19795791,  # New York (NY)
+  11613423,  # Ohio (OH)
+  3911338,   # Oklahoma (OK)
+  4028977,   # Oregon (OR)
+  12802503,  # Pennsylvania (PA)
+  1056298,   # Rhode Island (RI)
+  4896146,   # South Carolina (SC)
+  858469,    # South Dakota (SD)
+  6600299,   # Tennessee (TN)
+  27469114,  # Texas (TX)
+  2995919,   # Utah (UT)
+  8382993,   # Virginia (VA)
+  626042,    # Vermont (VT)
+  7170351,   # Washington (WA)
+  5771337,   # Wisconsin (WI)
+  1844128,   # West Virginia (WV)
+  586107     # Wyoming (WY)
+),
+    population_2020 = c(
+  731545,    # Alaska (AK)
+  4921532,   # Alabama (AL)
+  3013756,   # Arkansas (AR)
+  7276316,   # Arizona (AZ)
+  39538223,  # California (CA)
+  5773714,   # Colorado (CO)
+  3605944,   # Connecticut (CT)
+  689545,    # District of Columbia (DC)
+  989948,    # Delaware (DE)
+  21538187,  # Florida (FL)
+  10711908,  # Georgia (GA)
+  1455271,   # Hawaii (HI)
+  3190369,   # Iowa (IA)
+  1839106,   # Idaho (ID)
+  12812508,  # Illinois (IL)
+  6785528,   # Indiana (IN)
+  2937880,   # Kansas (KS)
+  4505836,   # Kentucky (KY)
+  4648794,   # Louisiana (LA)
+  7029917,   # Massachusetts (MA)
+  6177224,   # Maryland (MD)
+  1362359,   # Maine (ME)
+  10077331,  # Michigan (MI)
+  5706494,   # Minnesota (MN)
+  6154913,   # Missouri (MO)
+  2961279,   # Mississippi (MS)
+  1084225,   # Montana (MT)
+  10439388,  # North Carolina (NC)
+  779094,    # North Dakota (ND)
+  1961504,   # Nebraska (NE)
+  1371246,   # New Hampshire (NH)
+  9288994,   # New Jersey (NJ)
+  2117522,   # New Mexico (NM)
+  3104614,   # Nevada (NV)
+  20201249,  # New York (NY)
+  11799448,  # Ohio (OH)
+  3986639,   # Oklahoma (OK)
+  4237256,   # Oregon (OR)
+  13002700,  # Pennsylvania (PA)
+  1097379,   # Rhode Island (RI)
+  5118425,   # South Carolina (SC)
+  886667,    # South Dakota (SD)
+  6916897,   # Tennessee (TN)
+  29145505,  # Texas (TX)
+  3271616,   # Utah (UT)
+  8654542,   # Virginia (VA)
+  643077,    # Vermont (VT)
+  7705281,   # Washington (WA)
+  5893718,   # Wisconsin (WI)
+  1792147,   # West Virginia (WV)
+  576851     # Wyoming (WY)
+),
+    # Extract 2024 population data
+population_2024 = c(
+  740133,    # Alaska (AK)
+  5157699,   # Alabama (AL)
+  3088354,   # Arkansas (AR)
+  7582384,   # Arizona (AZ)
+  39431263,  # California (CA)
+  5957493,   # Colorado (CO)
+  3675069,   # Connecticut (CT)
+  702250,    # District of Columbia (DC)
+  1051917,   # Delaware (DE)
+  23372215,  # Florida (FL)
+  11180878,  # Georgia (GA)
+  1446146,   # Hawaii (HI)
+  3241488,   # Iowa (IA)
+  2001619,   # Idaho (ID)
+  12710158,  # Illinois (IL)
+  6924275,   # Indiana (IN)
+  2970606,   # Kansas (KS)
+  4588372,   # Kentucky (KY)
+  4597740,   # Louisiana (LA)
+  7136171,   # Massachusetts (MA)
+  6263220,   # Maryland (MD)
+  1405012,   # Maine (ME)
+  10140459,  # Michigan (MI)
+  5793151,   # Minnesota (MN)
+  2943045,   # Mississippi (MS)
+  6245466,   # Missouri (MO)
+  1137233,   # Montana (MT)
+  11046024,  # North Carolina (NC)
+  796568,    # North Dakota (ND)
+  2005465,   # Nebraska (NE)
+  1409032,   # New Hampshire (NH)
+  9500851,   # New Jersey (NJ)
+  2130256,   # New Mexico (NM)
+  3267467,   # Nevada (NV)
+  19867248,  # New York (NY)
+  11883304,  # Ohio (OH)
+  4095393,   # Oklahoma (OK)
+  4272371,   # Oregon (OR)
+  13078751,  # Pennsylvania (PA)
+  1112308,   # Rhode Island (RI)
+  5478831,   # South Carolina (SC)
+  924669,    # South Dakota (SD)
+  7227750,   # Tennessee (TN)
+  31290831,  # Texas (TX)
+  3503613,   # Utah (UT)
+  8811195,   # Virginia (VA)
+  648493,    # Vermont (VT)
+  7958180,   # Washington (WA)
+  1769979,   # West Virginia (WV)
+  5960975,   # Wisconsin (WI)
+  587618     # Wyoming (WY)
+)
+
+
+  )
+# Display the population table
+kable(state_population_table, caption = "State Populations for 2015, 2020, and 2024")
+
+# Step 2: Aggregate shooting counts by state (including DC)
+# Assuming df_final contains the shooting data with a 'state' column
+state_counts <- df_final %>%
+  count(state) %>%
+  #print(count(state)) %>%
+  rename(shooting_count = n)
+
+# Step 3: Generate plots for each year
+years <- c("2015", "2020", "2024")
+
+for (year in years) {
+  # Select the population column for the current year
+  population_column <- paste0("population_", year)
+  
+  # Merge shooting counts with population data
+  state_data <- state_counts %>%
+    left_join(
+      state_population_table[, c("state", population_column)],  # Base R subsetting
+      by = "state"
+    ) %>%
+    mutate(
+      shooting_rate = (shooting_count / .data[[population_column]]) * 100000,
+      #print(shooting_rate)
+    )
+  
+  # Create a bar plot
+  bar_plot <- ggplot(state_data, aes(x = reorder(state, -shooting_rate), y = shooting_rate, fill = shooting_rate)) +
+    geom_bar(stat = "identity") +
+    scale_fill_viridis(option = "plasma") +
+    labs(title = paste("Fatal Police Shootings per 100,000 People (", year, ")"),
+         x = "State", y = "Shootings per 100,000 People") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+  
+  # Save the plot as a file (PNG)
+  ggsave(
+    filename = paste0("shooting_rate_", year, ".png"), 
+    plot = bar_plot,
+    width = 10, 
+    height = 6, 
+    dpi = 300,
+    bg  = "white"
+  )
+  print(bar_plot)  
+}
+```
+
+##### While California has the highest raw number of fatal police shootings, New Mexico has a higher rate per capita, and Rhode Island maintains a low rate despite its small population. Across 2015, 2020, and 2024, New Mexico consistently leads in shootings per 100,000 people, followed by Alaska and Arizona. Normalizing by population accounts for state size and density, ensuring fair comparisons and identifying areas with disproportionately high rates for targeted interventions.
